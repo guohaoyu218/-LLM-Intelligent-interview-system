@@ -3,7 +3,7 @@
 提供面试评分和分析功能
 """
 
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any
 import json
 import re
 from datetime import datetime

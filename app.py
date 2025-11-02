@@ -4,7 +4,6 @@ AI智能面试官系统启动器
 """
 
 import sys
-import os
 import argparse
 from pathlib import Path
 

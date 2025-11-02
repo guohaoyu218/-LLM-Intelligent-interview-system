@@ -12,8 +12,19 @@ load_dotenv()
 class Config:
     """系统配置类"""
     
+    def find_project_root() -> Path:
+        """动态查找项目根目录（通过寻找.git文件夹）"""
+        current_path = Path(__file__).resolve()  # 当前文件的绝对路径
+        # 向上级目录循环查找，直到找到.git文件夹或到达系统根目录
+        while current_path != current_path.parent:
+            if (current_path / ".git").exists():
+                return current_path
+        current_path = current_path.parent
+    # 如果没找到标志性文件，可根据需求抛错或返回默认路径
+        raise FileNotFoundError("未找到项目根目录（未发现.git文件夹）")
+    
     # 基础配置
-    PROJECT_ROOT = Path(__file__).parent.parent.parent
+    PROJECT_ROOT = find_project_root()
     DATA_DIR = PROJECT_ROOT / "data"
     CHAT_HISTORY_DIR = PROJECT_ROOT / "chat_history"
     
@@ -51,6 +62,35 @@ class Config:
     MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
     ALLOWED_EXTENSIONS = {".pdf", ".doc", ".docx", ".txt", ".md"}
     
+    # 数据库配置
+    DB_HOST = os.getenv("DB_HOST", "localhost")
+    DB_PORT = int(os.getenv("DB_PORT", "3306"))
+    DB_USER = os.getenv("DB_USER", "root")
+    DB_PASSWORD = os.getenv("DB_PASSWORD", "")
+    DB_NAME = os.getenv("DB_NAME", "interview_db")
+    DATABASE_URL = os.getenv(
+        "DATABASE_URL",
+        f"mysql+pymysql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
+    )
+    
+    # JWT配置
+    SECRET_KEY = os.getenv("SECRET_KEY", "your-secret-key-keep-it-secret")
+    ALGORITHM = "HS256"
+    ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "30"))
+    REFRESH_TOKEN_EXPIRE_DAYS = int(os.getenv("REFRESH_TOKEN_EXPIRE_DAYS", "7"))
+    
+    # API配置
+    API_V1_PREFIX = "/api"
+    PROJECT_NAME = "AI面试系统"
+    VERSION = "1.0.0"
+    BACKEND_CORS_ORIGINS = [
+        "http://localhost:3000",
+        "http://localhost:8000",
+    ]
+    
+    # 上传配置
+    UPLOAD_DIR = PROJECT_ROOT / "uploads"
+    
     @classmethod
     def validate_config(cls) -> Dict[str, Any]:
         """验证配置"""
@@ -61,8 +101,16 @@ class Config:
         if not cls.DEEPSEEK_API_KEY:
             errors.append("DEEPSEEK_API_KEY未设置")
         
+        # 检查数据库配置
+        if not cls.DB_PASSWORD:
+            warnings.append("数据库密码未设置，请确保在生产环境中设置安全的数据库密码")
+        
+        # 检查JWT配置
+        if cls.SECRET_KEY == "your-secret-key-keep-it-secret":
+            warnings.append("正在使用默认的SECRET_KEY，请在生产环境中更改为安全的密钥")
+        
         # 检查目录
-        required_dirs = [cls.DATA_DIR, cls.CHAT_HISTORY_DIR]
+        required_dirs = [cls.DATA_DIR, cls.CHAT_HISTORY_DIR, cls.UPLOAD_DIR]
         for dir_path in required_dirs:
             if not dir_path.exists():
                 try:

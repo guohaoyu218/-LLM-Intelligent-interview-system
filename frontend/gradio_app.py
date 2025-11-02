@@ -4,7 +4,6 @@ Gradio前端应用主文件
 """
 
 import gradio as gr
-import os
 import sys
 import json
 import uuid
@@ -12,26 +11,37 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Any, Optional, Tuple
 
-# 添加项目路径
+# 将项目根目录加入 sys.path，确保可以导入 backend 包
 project_root = Path(__file__).parent.parent
-sys.path.append(str(project_root))
+sys.path.insert(0, str(project_root))
 
 from backend.utils.config import load_config
 from backend.utils.logger import get_logger, InterviewLogger
 from backend.models.deepseek_model import DeepSeekLLM
 from backend.models.bge_embedding import BGEEmbedding
 
+
+
 class InterviewSession:
     """面试会话管理类"""
     
     def __init__(self, config: Dict[str, Any]):
         self.config = config
-        self.session_id = str(uuid.uuid4())
-        self.logger = InterviewLogger(self.session_id)
+        self.session_id = None
+        self.logger = InterviewLogger(str(uuid.uuid4()))
         
-        # 初始化模型
-        self.llm = DeepSeekLLM(config)
-        self.embedding = BGEEmbedding(config)
+        # API 后端地址（可通过 config 覆盖）
+        self.api_base = config.get('api_base', 'http://127.0.0.1:8000') if isinstance(config, dict) else 'http://127.0.0.1:8000'
+        
+        # 保持旧的模型引用以兼容（但不在本地调用模型）
+        try:
+            self.llm = DeepSeekLLM(config)
+        except Exception:
+            self.llm = None
+        try:
+            self.embedding = BGEEmbedding(config)
+        except Exception:
+            self.embedding = None
         
         # 会话状态
         self.mode = "basic"
@@ -55,87 +65,106 @@ class InterviewSession:
         }
     
     def start_interview(self, mode: str, resume_text: str = "", jd_text: str = "") -> str:
-        """开始面试"""
+        """开始面试：调用后端 /interview/start 接口并初始化本地会话信息"""
         try:
             self.mode = mode
+            payload = {
+                "mode": mode,
+                "resume_content": resume_text or "",
+                "jd_content": jd_text or ""
+            }
+            import requests
+            r = requests.post(f"{self.api_base}/interview/start", json=payload, timeout=30)
+            r.raise_for_status()
+            resp = r.json()
+            data = resp.get("data") or {}
+            session_id = data.get("session_id")
+            welcome_message = data.get("welcome_message", "欢迎，面试已开始")
+
+            # 初始化本地会话
+            self.session_id = session_id
             self.interview_data["start_time"] = datetime.now()
             self.interview_data["mode"] = mode
-            
-            # 处理简历和JD
-            if resume_text:
-                self.interview_data["user_profile"]["resume"] = resume_text
-            if jd_text:
-                self.interview_data["user_profile"]["jd"] = jd_text
-            
-            # 生成开场白
-            system_prompt = self._get_interviewer_system_prompt()
-            greeting_prompt = f"""
-            你是一位专业的面试官，现在开始进行{mode}面试。
-            
-            面试信息：
-            - 面试模式：{mode}
-            - 简历信息：{resume_text[:200] if resume_text else '未提供'}
-            - 职位要求：{jd_text[:200] if jd_text else '未提供'}
-            
-            请用友好专业的语气开始面试，简短介绍面试流程，然后提出第一个问题。
-            """
-            
-            response = self.llm.invoke(greeting_prompt, system_prompt=system_prompt)
-            welcome_message = response.content
-            
+            self.interview_data["user_profile"]["resume"] = resume_text
+            self.interview_data["user_profile"]["jd"] = jd_text
+            self.chat_history = [{"role": "assistant", "content": welcome_message}]
+            self.interview_data["questions_count"] = 1
+
             # 记录日志
-            self.logger.log_session_start(mode, {
-                "has_resume": bool(resume_text),
-                "has_jd": bool(jd_text)
-            })
-            
+            try:
+                self.logger.log_session_start(mode, {"has_resume": bool(resume_text), "has_jd": bool(jd_text)})
+            except Exception:
+                pass
+
             return welcome_message
-            
         except Exception as e:
-            self.logger.log_error(e, "面试启动")
+            try:
+                self.logger.log_error(e, "面试启动")
+            except Exception:
+                pass
             return f"面试启动失败：{str(e)}"
     
     def process_user_input(self, user_input: str) -> str:
-        """处理用户输入"""
+        """处理用户输入：将用户回答发送到后端 /interview/continue 并返回面试官回应"""
         try:
-            # 分析用户回答
-            answer_analysis = self._analyze_answer(user_input)
-            
-            # 生成下一个问题
-            next_question = self._generate_next_question(user_input, answer_analysis)
-            
-            # 更新会话状态
-            self.interview_data["questions_count"] += 1
-            self.interview_data["performance_scores"].append(answer_analysis)
-            
+            if not self.session_id:
+                return "请先开始面试"
+            # 更新本地历史
+            self.chat_history.append({"role": "user", "content": user_input})
+
+            payload = {"session_id": self.session_id, "user_response": user_input}
+            import requests
+            r = requests.post(f"{self.api_base}/interview/continue", json=payload, timeout=30)
+            r.raise_for_status()
+            resp = r.json()
+            data = resp.get("data") or {}
+            interviewer_response = data.get("interviewer_response", "系统未返回内容")
+
+            # 更新本地会话数据
+            self.chat_history.append({"role": "assistant", "content": interviewer_response})
+            self.interview_data["questions_count"] = data.get("question_count", self.interview_data.get("questions_count", 0))
+
             # 记录日志
-            self.logger.log_answer(user_input, answer_analysis)
-            self.logger.log_question(next_question, self.difficulty, self.mode)
-            
-            return next_question
-            
+            try:
+                self.logger.log_answer(user_input, {})
+                self.logger.log_question(interviewer_response, self.difficulty, self.mode)
+            except Exception:
+                pass
+
+            return interviewer_response
         except Exception as e:
-            self.logger.log_error(e, "处理用户输入")
+            try:
+                self.logger.log_error(e, "处理用户输入")
+            except Exception:
+                pass
             return "抱歉，系统出现问题，让我们继续讨论其他话题。"
     
     def end_interview(self) -> Dict[str, Any]:
-        """结束面试并生成报告"""
+        """结束面试并调用后端 /interview/end 接口触发报告生成，返回简单提示或报告（若已生成）"""
         try:
+            if not self.session_id:
+                return {"error": "没有进行中的面试"}
+
+            payload = {"session_id": self.session_id}
+            import requests
+            r = requests.post(f"{self.api_base}/interview/end", json=payload, timeout=30)
+            r.raise_for_status()
+            resp = r.json()
+            data = resp.get("data") or {}
+
+            # 更新本地状态
             self.interview_data["end_time"] = datetime.now()
-            
-            # 生成面试报告
-            report = self._generate_interview_report()
-            
-            # 保存会话数据
-            self._save_session_data()
-            
-            # 记录日志
-            self.logger.log_session_end(report)
-            
-            return report
-            
+
+            # 返回后端提示，报告在后台生成，前端可轮询 /evaluation/{session_id}
+            return {
+                "session_id": self.session_id,
+                "message": resp.get("message", "面试已结束，报告生成中")
+            }
         except Exception as e:
-            self.logger.log_error(e, "结束面试")
+            try:
+                self.logger.log_error(e, "结束面试")
+            except Exception:
+                pass
             return {"error": f"报告生成失败：{str(e)}"}
     
     def _get_interviewer_system_prompt(self) -> str:

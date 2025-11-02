@@ -3,7 +3,7 @@
 整合原utils_enhanced.py的功能到backend结构中
 """
 
-import os
+
 import json
 from typing import List, Dict, Any
 from pathlib import Path
@@ -165,6 +165,7 @@ def save_json_file(data: Dict[str, Any], file_path: str) -> bool:
         
         with open(file_path, 'w', encoding='utf-8') as file:
             json.dump(data, file, ensure_ascii=False, indent=2)
+            #将 Python 数据结构（如字典、列表）序列化为 JSON 格式，并写入指定文件中，同时设置 “不转义非 ASCII 字符” 和 “2 个空格缩进”
         return True
     except Exception as e:
         print(f"保存JSON文件失败 {file_path}: {e}")

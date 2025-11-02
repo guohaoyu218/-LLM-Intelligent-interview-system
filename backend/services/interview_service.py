@@ -11,7 +11,10 @@ from pathlib import Path
 
 from backend.utils.logger import get_logger
 from backend.models.deepseek_model import DeepSeekLLM
+from backend.models.qwen_model import QwenLLM
 from backend.models.bge_embedding import BGEEmbedding
+from agents.interview_agent import InterviewAgent
+from backend.agents.evaluation_agent import EvaluationAgent
 
 
 class InterviewService:
@@ -22,8 +25,13 @@ class InterviewService:
         self.logger = get_logger(__name__)
         
         # 初始化模型
-        self.llm = DeepSeekLLM(config)
+        self.deepseek_llm = DeepSeekLLM(config)
+        self.qwen_llm = QwenLLM(config)
         self.embedding = BGEEmbedding(config)
+        
+        # 初始化智能体
+        self.interview_agent = InterviewAgent(self.deepseek_llm, config)
+        self.evaluation_agent = EvaluationAgent(self.qwen_llm, config)
         
         # 面试模板
         self.interview_templates = {
@@ -176,12 +184,26 @@ class InterviewService:
             # 构建对话上下文
             conversation_context = self._build_conversation_context(session_data["conversation_history"])
             
-            # 生成面试官回应
-            interviewer_response = self.llm.invoke(
-                f"候选人回答：{user_response}\n\n请给出专业的面试官回应，包括对答案的简短评价和下一个问题。",
-                system_prompt=session_data["system_prompt"] + f"\n\n对话历史：\n{conversation_context}",
-                temperature=0.7,
-                max_tokens=600
+            # 使用评估智能体评估回答
+            evaluation_result = self.evaluation_agent.evaluate_answer(
+                user_response,
+                session_data.get("metadata", {}).get("current_question", ""),
+                session_data["system_prompt"],
+                conversation_context
+            )
+            
+            # 更新会话评分
+            if "scores" not in session_data["metadata"]:
+                session_data["metadata"]["scores"] = []
+            session_data["metadata"]["scores"].append(evaluation_result)
+            
+            # 使用面试智能体生成下一个问题
+            interviewer_response = self.interview_agent.generate_response(
+                user_response,
+                session_data["system_prompt"],
+                conversation_context,
+                evaluation_result,
+                session_data["metadata"]["question_count"]
             )
             
             # 更新会话数据
@@ -242,31 +264,32 @@ class InterviewService:
             
         return False
     
-    def get_interview_summary(self, session_data: Dict[str, Any]) -> str:
-        """生成面试总结"""
+    def get_interview_summary(self, session_data: Dict[str, Any]) -> Dict[str, Any]:
+        """生成面试总结和评估报告"""
         try:
             conversation_context = self._build_conversation_context(session_data["conversation_history"])
+            scores = session_data.get("metadata", {}).get("scores", [])
             
-            summary_prompt = f"""基于以下面试对话，生成面试总结：
-
-对话内容：
-{conversation_context}
-
-请生成包含以下内容的总结：
-1. 候选人整体表现概述
-2. 主要优势和亮点
-3. 需要改进的地方
-4. 对该候选人的初步评价
-
-总结应客观、专业、建设性。"""
-
-            summary_response = self.llm.invoke(
-                summary_prompt,
-                temperature=0.6,
-                max_tokens=800
+            # 使用评估智能体生成详细报告
+            evaluation_report = self.evaluation_agent.generate_report(
+                conversation_context,
+                scores,
+                session_data["system_prompt"]
             )
             
-            return summary_response.content
+            # 使用面试智能体生成总体评价
+            interview_summary = self.interview_agent.generate_summary(
+                conversation_context,
+                evaluation_report,
+                session_data["system_prompt"]
+            )
+            
+            return {
+                "summary": interview_summary,
+                "evaluation": evaluation_report,
+                "scores": scores,
+                "status": "success"
+            }
             
         except Exception as e:
             self.logger.error(f"生成面试总结失败: {e}")

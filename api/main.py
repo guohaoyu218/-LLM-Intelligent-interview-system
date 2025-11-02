@@ -7,12 +7,11 @@ from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
-from typing import Dict, List, Any, Optional
+from typing import Dict,  Any, Optional
 import sys
-import os
 from pathlib import Path
 from datetime import datetime
-import uuid
+
 
 # 添加项目路径
 project_root = Path(__file__).parent.parent
